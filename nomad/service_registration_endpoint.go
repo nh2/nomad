@@ -10,6 +10,7 @@ import (
 	"github.com/armon/go-metrics"
 	"github.com/hashicorp/go-memdb"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-set"
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/nomad/state"
@@ -188,42 +189,28 @@ func (s *ServiceRegistration) List(
 			}
 
 			// Track the unique tags found per service registration name.
-			serviceTags := make(map[string]map[string]struct{})
+			tagsPerService := make(map[string]*set.Set[string])
 
 			for raw := iter.Next(); raw != nil; raw = iter.Next() {
+				registration := raw.(*structs.ServiceRegistration)
 
-				serviceReg := raw.(*structs.ServiceRegistration)
-
-				// Identify and add any tags for the current service being
-				// iterated into the map. If the tag has already been seen for
-				// the same service, it will be overwritten ensuring no
-				// duplicates.
-				tags, ok := serviceTags[serviceReg.ServiceName]
-				if !ok {
-					serviceTags[serviceReg.ServiceName] = make(map[string]struct{})
-					tags = serviceTags[serviceReg.ServiceName]
-				}
-				for _, tag := range serviceReg.Tags {
-					tags[tag] = struct{}{}
+				// Accumulate all tags associated with the service name
+				if _, exists := tagsPerService[registration.ServiceName]; !exists {
+					tagsPerService[registration.ServiceName] = set.From(registration.Tags)
+				} else {
+					tagsPerService[registration.ServiceName].InsertAll(registration.Tags)
 				}
 			}
 
 			var serviceList []*structs.ServiceRegistrationStub
-
 			// Iterate the serviceTags map and populate our output result. This
 			// endpoint handles a single namespace, so we do not need to
 			// account for multiple.
-			for service, tags := range serviceTags {
-
-				serviceStub := structs.ServiceRegistrationStub{
+			for service, tags := range tagsPerService {
+				serviceList = append(serviceList, &structs.ServiceRegistrationStub{
 					ServiceName: service,
-					Tags:        make([]string, 0, len(tags)),
-				}
-				for tag := range tags {
-					serviceStub.Tags = append(serviceStub.Tags, tag)
-				}
-
-				serviceList = append(serviceList, &serviceStub)
+					Tags:        tags.List(),
+				})
 			}
 
 			// Correctly handle situations where a namespace was passed that

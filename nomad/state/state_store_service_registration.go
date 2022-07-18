@@ -153,7 +153,7 @@ func (s *StateStore) DeleteServiceRegistrationByNodeID(
 func (s *StateStore) GetServiceRegistrations(ws memdb.WatchSet) (memdb.ResultIterator, error) {
 	txn := s.db.ReadTxn()
 
-	// Walk the entire table.
+	// Walk the entire table. 
 	iter, err := txn.Get(TableServiceRegistrations, indexID)
 	if err != nil {
 		return nil, fmt.Errorf("service registration lookup failed: %v", err)

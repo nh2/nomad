@@ -1,7 +1,9 @@
 package serviceregistration
 
 import (
+	"crypto/md5"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/nomad/nomad/structs"
 )
@@ -10,18 +12,32 @@ const (
 	// nomadServicePrefix is the prefix that scopes all Nomad registered
 	// services (both agent and task entries).
 	nomadServicePrefix = "_nomad"
-
-	// nomadTaskPrefix is the prefix that scopes Nomad registered services
-	// for tasks.
-	nomadTaskPrefix = nomadServicePrefix + "-task-"
 )
 
 // MakeAllocServiceID creates a unique ID for identifying an alloc service in
 // a service registration provider. Both Nomad and Consul solutions use the
 // same ID format to provide consistency.
 //
-// Example Service ID: _nomad-task-b4e61df9-b095-d64e-f241-23860da1375f-redis-http-http
+// Format: _nomad-<task|`group`>-service-allocID<-port_label><-tags_hash>
+//
+// Example ID: _nomad-group-database-db-7f3eb69d-3a84-a0e7-2681-5f962ef522b0-f97c5d
 func MakeAllocServiceID(allocID, taskName string, service *structs.Service) string {
-	return fmt.Sprintf("%s%s-%s-%s-%s",
-		nomadTaskPrefix, allocID, taskName, service.Name, service.PortLabel)
+	if taskName == "" {
+		taskName = "group"
+	}
+	parts := []string{nomadServicePrefix, taskName, service.Name, allocID}
+	if service.PortLabel != "" {
+		parts = append(parts, service.PortLabel)
+	}
+
+	if len(service.Tags) > 0 {
+		h := md5.New()
+		for _, tag := range service.Tags {
+			h.Write([]byte(tag))
+		}
+		short := fmt.Sprintf("%x", h.Sum(nil))[0:6]
+		parts = append(parts, short)
+	}
+
+	return strings.Join(parts, "-")
 }
