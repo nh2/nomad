@@ -3,6 +3,7 @@ package nomad
 import (
 	"errors"
 	"fmt"
+	"github.com/shoenig/test/must"
 	"sort"
 	"strconv"
 	"testing"
@@ -1663,6 +1664,27 @@ func waitForStableLeadership(t *testing.T, servers []*Server) *Server {
 	})
 
 	return leader
+}
+
+func TestServer_getLatestIndex(t *testing.T) {
+	ci.Parallel(t)
+
+	testServer, testServerCleanup := TestServer(t, nil)
+	defer testServerCleanup()
+
+	// Test a new state store value.
+	idx, success := testServer.getLatestIndex()
+	require.True(t, success)
+	must.Eq(t, 1, idx)
+
+	// Upsert something with a high index, and check again.
+	err := testServer.State().UpsertACLPolicies(
+		structs.MsgTypeTestSetup, 1013, []*structs.ACLPolicy{mock.ACLPolicy()})
+	require.NoError(t, err)
+
+	idx, success = testServer.getLatestIndex()
+	require.True(t, success)
+	must.Eq(t, 1013, idx)
 }
 
 func TestServer_handleEvalBrokerStateChange(t *testing.T) {

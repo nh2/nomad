@@ -51,6 +51,10 @@ func (c *CoreScheduler) Process(eval *structs.Evaluation) error {
 		return c.csiPluginGC(eval)
 	case structs.CoreJobOneTimeTokenGC:
 		return c.expiredOneTimeTokenGC(eval)
+	case structs.CoreJobLocalTokenExpiredGC:
+		return c.expiredACLTokenGC(eval, false)
+	case structs.CoreJobGlobalTokenExpiredGC:
+		return c.expiredACLTokenGC(eval, true)
 	case structs.CoreJobForceGC:
 		return c.forceGC(eval)
 	default:
@@ -78,6 +82,20 @@ func (c *CoreScheduler) forceGC(eval *structs.Evaluation) error {
 	if err := c.expiredOneTimeTokenGC(eval); err != nil {
 		return err
 	}
+
+	// If we have ACLs enabled, trigger the local token GC process. Only if we
+	// are the authoritative region, trigger the global token GC process.
+	if c.srv.config.ACLEnabled {
+		if err := c.expiredACLTokenGC(eval, false); err != nil {
+			return err
+		}
+		if c.srv.config.AuthoritativeRegion == c.srv.Region() {
+			if err := c.expiredACLTokenGC(eval, true); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Node GC must occur after the others to ensure the allocations are
 	// cleared.
 	return c.nodeGC(eval)
@@ -771,6 +789,82 @@ func (c *CoreScheduler) expiredOneTimeTokenGC(eval *structs.Evaluation) error {
 		},
 	}
 	return c.srv.RPC("ACL.ExpireOneTimeTokens", req, &structs.GenericResponse{})
+}
+
+// expiredACLTokenGC handles running the garbage collector for expired ACL
+// tokens. It can be used for both local and global tokens and includes
+// behaviour to account for periodic and user actioned garbage collection
+// invocations.
+func (c *CoreScheduler) expiredACLTokenGC(eval *structs.Evaluation, global bool) error {
+
+	expiryThreshold := c.getThreshold(eval, "expired_acl_token",
+		"acl_token_expiration_gc_threshold", c.srv.config.ACLTokenExpirationGCThreshold)
+
+	expiredIter, err := c.snap.ACLTokensByExpired(global)
+	if err != nil {
+		return err
+	}
+
+	var (
+		expiredAccessorIDs []string
+		num                int
+	)
+
+	// The memdb iterator contains all tokens which include an expiration time,
+	// however, as the caller, we do not know at which point in the array the
+	// tokens are no longer expired. This time therefore forms the basis at
+	// which we draw the line in the iteration loop and find the final expired
+	// token that is eligible for deletion.
+	now := time.Now().UTC()
+
+	for raw := expiredIter.Next(); raw != nil; raw = expiredIter.Next() {
+		token := raw.(*structs.ACLToken)
+
+		// The indexes mean if we come across an unexpired token, we can exit
+		// as we have found all currently expired tokens.
+		if !token.IsExpired(now) {
+			break
+		}
+
+		// Check whether the token is old enough to be deleted and skip if it
+		// is not.
+		if token.CreateIndex > expiryThreshold {
+			continue
+		}
+
+		// Add the token accessor ID to the tracking array, thus marking it
+		// ready for deletion.
+		expiredAccessorIDs = append(expiredAccessorIDs, token.AccessorID)
+
+		// Increment the counter. If this is at or above our limit, we return
+		// what we have so far.
+		if num++; num >= structs.ACLMaxExpiredBatchSize {
+			break
+		}
+	}
+
+	// There is no need to call the RPC endpoint if we do not have any tokens
+	// to delete.
+	if len(expiredAccessorIDs) < 1 {
+		return nil
+	}
+
+	// Log a nice, friendly debug message which could be useful when debugging
+	// garbage collection in environments with a high rate of token creation
+	// and expiration.
+	c.logger.Debug("expired ACL token GC found eligible tokens",
+		"num", len(expiredAccessorIDs))
+
+	// Set up and make the RPC request which will return any error performing
+	// the deletion.
+	req := structs.ACLTokenDeleteRequest{
+		AccessorIDs: expiredAccessorIDs,
+		WriteRequest: structs.WriteRequest{
+			Region:    c.srv.Region(),
+			AuthToken: eval.LeaderACL,
+		},
+	}
+	return c.srv.RPC(structs.ACLDeleteTokensRPCMethod, req, &structs.GenericResponse{})
 }
 
 // getThreshold returns the index threshold for determining whether an
