@@ -21,7 +21,7 @@ export function filesForPath(allocFiles, filterPath) {
   );
 }
 
-export default function () {
+export default async function () {
   this.timing = 0; // delay for each request, automatically set to 0 during testing
 
   this.logging = window.location.search.includes('mirage-logging=true');
@@ -31,7 +31,7 @@ export default function () {
 
   const nomadIndices = {}; // used for tracking blocking queries
   const server = this;
-  const withBlockingSupport = function (fn) {
+  const withBlockingSupport = async function (fn) {
     return function (schema, request) {
       // Get the original response
       let { url } = request;
@@ -52,11 +52,16 @@ export default function () {
     };
   };
 
+  this.passthrough('http://localhost:8080/pablo');
+
   this.get(
     '/jobs',
-    withBlockingSupport(function ({ jobs }, { queryParams }) {
+    withBlockingSupport(async function ({ jobs }, { queryParams }) {
       const json = this.serialize(jobs.all());
       const namespace = queryParams.namespace || 'default';
+      debugger;
+      const data = await fetch('http://localhost:8080/pablo');
+      return data.json();
       return json
         .filter((job) => {
           if (namespace === '*') return true;
